@@ -76,6 +76,17 @@ function escapeHtml(input: string): string {
     .replaceAll("'", "&#39;");
 }
 
+type FrankfurterResponse = {
+  rates?: Partial<Record<Currency, number>>;
+  base?: string;
+};
+
+type OpenErApiResponse = {
+  result?: string;
+  rates?: Partial<Record<Currency, number>>;
+  time_last_update_utc?: string;
+};
+
 function App() {
   const [dashboard, setDashboard] = useState<DashboardState>(() => loadDashboardState());
   const [customModalOpen, setCustomModalOpen] = useState(false);
@@ -83,6 +94,9 @@ function App() {
   const [customCategory, setCustomCategory] = useState<SubscriptionCategory>("Видео");
   const [customError, setCustomError] = useState("");
   const [activeCategoryTab, setActiveCategoryTab] = useState<SubscriptionCategory>("Видео");
+  const [ratesModalOpen, setRatesModalOpen] = useState(false);
+  const [ratesLoading, setRatesLoading] = useState(false);
+  const [ratesError, setRatesError] = useState("");
 
   useEffect(() => {
     saveDashboardState(dashboard);
@@ -419,6 +433,70 @@ function App() {
     };
   }
 
+  async function refreshExchangeRates() {
+    setRatesError("");
+    setRatesLoading(true);
+    try {
+      let rubPerUsd = 0;
+      let eurPerUsd = 0;
+      let gbpPerUsd = 0;
+      let tryPerUsd = 0;
+
+      try {
+        const primaryResponse = await fetch("https://open.er-api.com/v6/latest/USD");
+        if (!primaryResponse.ok) {
+          throw new Error(`HTTP ${primaryResponse.status}`);
+        }
+        const primaryPayload = (await primaryResponse.json()) as OpenErApiResponse;
+        if (primaryPayload.result !== "success") {
+          throw new Error("API result is not success");
+        }
+        rubPerUsd = Number(primaryPayload.rates?.RUB);
+        eurPerUsd = Number(primaryPayload.rates?.EUR);
+        gbpPerUsd = Number(primaryPayload.rates?.GBP);
+        tryPerUsd = Number(primaryPayload.rates?.TRY);
+      } catch {
+        const targets = ["RUB", "EUR", "GBP", "TRY"].join(",");
+        const fallbackResponse = await fetch(
+          `https://api.frankfurter.app/latest?from=USD&to=${targets}`
+        );
+        if (!fallbackResponse.ok) {
+          throw new Error(`HTTP ${fallbackResponse.status}`);
+        }
+        const fallbackPayload = (await fallbackResponse.json()) as FrankfurterResponse;
+        rubPerUsd = Number(fallbackPayload.rates?.RUB);
+        eurPerUsd = Number(fallbackPayload.rates?.EUR);
+        gbpPerUsd = Number(fallbackPayload.rates?.GBP);
+        tryPerUsd = Number(fallbackPayload.rates?.TRY);
+      }
+
+      if (!Number.isFinite(rubPerUsd) || rubPerUsd <= 0) {
+        throw new Error("RUB rate is unavailable in API response");
+      }
+
+      const nextRates = { ...dashboard.fxRates, RUB: 1, USD: rubPerUsd };
+      if (Number.isFinite(eurPerUsd) && eurPerUsd > 0) {
+        nextRates.EUR = rubPerUsd / eurPerUsd;
+      }
+      if (Number.isFinite(gbpPerUsd) && gbpPerUsd > 0) {
+        nextRates.GBP = rubPerUsd / gbpPerUsd;
+      }
+      if (Number.isFinite(tryPerUsd) && tryPerUsd > 0) {
+        nextRates.TRY = rubPerUsd / tryPerUsd;
+      }
+
+      updateDashboard((current) => ({
+        ...current,
+        fxRates: nextRates,
+      }));
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Unknown error";
+      setRatesError(`Не удалось обновить курсы: ${message}`);
+    } finally {
+      setRatesLoading(false);
+    }
+  }
+
   return (
     <div className="dashboard-bg">
       <div className="dashboard-shell">
@@ -536,6 +614,9 @@ function App() {
               <p>Updated: {new Date(dashboard.updatedAt).toLocaleString("ru-RU")}</p>
             </div>
             <div className="topbar-actions">
+              <button className="btn-secondary" onClick={() => setRatesModalOpen(true)}>
+                Exchange rates
+              </button>
               <button className="btn-secondary" onClick={exportActiveSubscriptionsPdf}>
                 <Download size={16} />
                 Export PDF
@@ -586,7 +667,7 @@ function App() {
                 >
                   <span className="category-tab-label">{category}</span>
                   <span className="category-tab-meta">
-                    {(categoryActiveCountMap.get(category) ?? 0)} активных /{" "}
+                    {(categoryActiveCountMap.get(category) ?? 0)} /{" "}
                     {formatMoney(categoryTotalMap.get(category) ?? 0, dashboard.displayCurrency)}
                   </span>
                 </button>
@@ -628,7 +709,7 @@ function App() {
                             className="provider-chip"
                             style={{
                               borderColor: getServiceBrandColor(serviceKey),
-                              color: getServiceBrandColor(serviceKey),
+                              color: serviceKey === "tbank" ? "#111827" : getServiceBrandColor(serviceKey),
                               backgroundColor: hexToRgba(getServiceBrandColor(serviceKey), 0.08),
                             }}
                           >
@@ -791,7 +872,7 @@ function App() {
                             className="provider-chip"
                             style={{
                               borderColor: getServiceBrandColor(serviceKey),
-                              color: getServiceBrandColor(serviceKey),
+                              color: serviceKey === "tbank" ? "#111827" : getServiceBrandColor(serviceKey),
                               backgroundColor: hexToRgba(getServiceBrandColor(serviceKey), 0.08),
                             }}
                           >
@@ -902,6 +983,39 @@ function App() {
               </button>
               <button className="btn-primary" onClick={createCustomSubscription}>
                 Создать
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
+
+      {ratesModalOpen ? (
+        <div className="modal-backdrop" role="dialog" aria-modal="true">
+          <div className="glass-panel modal-panel">
+            <div className="modal-header">
+              <h3>Exchange rates (used now)</h3>
+              <button className="icon-btn" onClick={() => setRatesModalOpen(false)}>
+                <X size={16} />
+              </button>
+            </div>
+
+            <div className="rates-list">
+              {CURRENCIES.map((currency) => (
+                <div key={currency} className="rates-row">
+                  <span>1 {currency}</span>
+                  <strong>= {dashboard.fxRates[currency].toFixed(currency === "RUB" ? 0 : 4)} RUB</strong>
+                </div>
+              ))}
+            </div>
+
+            {ratesError ? <div className="form-error">{ratesError}</div> : null}
+
+            <div className="modal-actions">
+              <button className="btn-secondary" onClick={() => setRatesModalOpen(false)}>
+                Close
+              </button>
+              <button className="btn-primary" onClick={refreshExchangeRates} disabled={ratesLoading}>
+                {ratesLoading ? "Updating..." : "Update from API"}
               </button>
             </div>
           </div>

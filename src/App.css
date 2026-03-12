@@ -745,6 +745,23 @@ body {
   margin-top: 8px;
 }
 
+.rates-list {
+  display: grid;
+  gap: 6px;
+  margin-top: 8px;
+}
+
+.rates-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  border: 1px solid rgba(30, 64, 90, 0.12);
+  border-radius: 7px;
+  background: rgba(255, 255, 255, 0.78);
+  padding: 7px 10px;
+  font-size: 0.84rem;
+}
+
 .modal-actions {
   margin-top: 12px;
   display: flex;
